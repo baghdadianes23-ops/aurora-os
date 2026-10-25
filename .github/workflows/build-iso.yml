@@ -1,0 +1,94 @@
+# ============================================================
+#  Aurora OS — build the ISO on GitHub's servers (free)
+#  Starts automatically when aurora-os-iso.zip is uploaded/updated,
+#  or by hand: Actions → "Build Aurora OS ISO" → Run workflow.
+#  Result: Releases → aurora-os-N  (ISO parts + JOIN-ISO.bat for Windows)
+# ============================================================
+name: Build Aurora OS ISO
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "aurora-os-iso.zip"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    steps:
+      - name: Get the project
+        uses: actions/checkout@v4
+
+      - name: Free disk space (the build needs ~20 GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache \
+                      /usr/local/share/boost /usr/local/.ghcup /usr/share/swift || true
+          sudo docker image prune --all --force >/dev/null || true
+          df -h /
+
+      - name: Unpack Aurora OS
+        run: |
+          if [ -f aurora-os-iso.zip ]; then
+            unzip -q aurora-os-iso.zip -d src
+            echo "P=$GITHUB_WORKSPACE/src/aurora-os-iso" >> "$GITHUB_ENV"
+          else
+            echo "P=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build the ISO inside Debian 13 (40–90 min)
+        run: |
+          chmod +x "$P/build-iso.sh"
+          sudo docker run --privileged --rm -v "$P":/work -w /work debian:trixie \
+            bash -c "apt-get update -qq && apt-get install -y -qq ca-certificates >/dev/null && ./build-iso.sh"
+
+      - name: Keep the build log if something failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: ${{ env.P }}/build.log
+
+      - name: Prepare files for download (GitHub allows 2 GB per file)
+        run: |
+          OUT="$GITHUB_WORKSPACE/out"; mkdir -p "$OUT"
+          cd "$P"
+          ISO=$(ls aurora-os-*-amd64.iso | head -1)
+          sudo chown "$(id -u):$(id -g)" "$ISO" "$ISO.sha256"
+          cp "$ISO.sha256" "$OUT/"
+          if [ "$(stat -c %s "$ISO")" -lt 2000000000 ]; then
+            mv "$ISO" "$OUT/"
+            printf 'The ISO is a single file: open it directly with Rufus.\r\n' > "$OUT/README-WINDOWS.txt"
+          else
+            split -b 1900M -d -a 1 "$ISO" "$OUT/$ISO.part"
+            PARTS=$(cd "$OUT" && ls "$ISO".part* | paste -sd'+')
+            HASH=$(cut -d' ' -f1 "$ISO.sha256")
+            {
+              printf '@echo off\r\n'
+              printf 'cd /d "%%~dp0"\r\n'
+              printf 'title Aurora OS - join ISO\r\n'
+              printf 'echo.\r\necho   AURORA OS  -  joining the ISO parts, please wait...\r\necho.\r\n'
+              printf 'copy /b %s "%s" >nul\r\n' "$PARTS" "$ISO"
+              printf 'if errorlevel 1 (echo   ERROR: put all .part files in the same folder as this file. & pause & exit /b 1)\r\n'
+              printf 'echo   Checking the file (SHA-256)...\r\n'
+              printf 'certutil -hashfile "%s" SHA256 | findstr /i "%s" >nul\r\n' "$ISO" "$HASH"
+              printf 'if errorlevel 1 (echo   WARNING: checksum does not match - download the parts again.) else (echo   OK - the ISO is perfect: %s)\r\n' "$ISO"
+              printf 'echo.\r\necho   Now open Rufus, select this ISO and choose "DD Image" mode.\r\necho.\r\npause\r\n'
+            } > "$OUT/JOIN-ISO.bat"
+          fi
+          ls -la "$OUT"
+
+      - name: Publish the ISO (Releases)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: aurora-os-${{ github.run_number }}
+          name: Aurora OS — build ${{ github.run_number }}
+          body: |
+            ## Aurora OS (Debian 13) — ready for Rufus
+            1. Download **every** file below into one folder.
+            2. If there are `.part` files: double-click **JOIN-ISO.bat** → it creates the `.iso` and checks it.
+            3. Open **Rufus** → select the `.iso` → START → choose **DD Image** mode.
+          files: out/*
