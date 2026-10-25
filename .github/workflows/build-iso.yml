@@ -1,6 +1,6 @@
 # ============================================================
 #  Aurora OS — build the ISO on GitHub's servers (free)
-#  Starts automatically when aurora-os-iso.zip is uploaded/updated,
+#  Starts automatically when a zip (aurora-os-iso*.zip) is uploaded,
 #  or by hand: Actions → "Build Aurora OS ISO" → Run workflow.
 #  Result: Releases → aurora-os-N  (ISO parts + JOIN-ISO.bat for Windows)
 # ============================================================
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - "aurora-os-iso.zip"
+      - "*.zip"
 
 permissions:
   contents: write
@@ -32,9 +32,11 @@ jobs:
 
       - name: Unpack Aurora OS
         run: |
-          if [ -f aurora-os-iso.zip ]; then
-            unzip -q aurora-os-iso.zip -d src
-            echo "P=$GITHUB_WORKSPACE/src/aurora-os-iso" >> "$GITHUB_ENV"
+          ZIP=$(ls -t aurora-os-iso*.zip 2>/dev/null | head -1)
+          if [ -n "$ZIP" ]; then
+            echo "Using $ZIP"
+            unzip -q "$ZIP" -d src
+            echo "P=$(dirname "$(find "$GITHUB_WORKSPACE/src" -name build-iso.sh | head -1)")" >> "$GITHUB_ENV"
           else
             echo "P=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
           fi
